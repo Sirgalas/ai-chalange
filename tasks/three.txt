@@ -1,1 +1,2 @@
-Пять машин едут по дороге. Первая обгоняет вторую. Третья едет позади четвертой. Вторая быстрее третьей, но медленнее пятой. Кто едет последним?
+Five cars are driving in a line. The first overtakes the second. The third is behind the fourth. The second is faster than the third but slower than the fifth. Which car is last?
+отвечай на русском

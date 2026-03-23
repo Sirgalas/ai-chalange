@@ -1,12 +1,19 @@
 #!/bin/bash
 
-# --- ЦВЕТА ДЛЯ КОНСОЛИ ---
+# Принудительная кодировка для Windows/Git Bash
+chcp 65001 > /dev/null 2>&1
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+
+# --- ЦВЕТА ---
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
-NC='\033[0m' # No Color
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
 
-# --- ЗАГРУЗКА ПЕРЕМЕННЫХ ---
+# --- ЗАГРУЗКА .ENV ---
 if [ -f .env ]; then
     set -a
     source .env
@@ -17,119 +24,177 @@ else
 fi
 
 API_KEY="$OPENROUTER_API_KEY"
-MODEL="${MODEL_NAME:-z-ai/glm-5-turbo}"
 URL="https://openrouter.ai/api/v1/chat/completions"
 TASKS_DIR="./tasks"
 
-# --- ФУНКЦИЯ ВЫБОРА ЗАДАЧИ ---
-select_task() {
-    echo -e "${YELLOW}📂 Доступные файлы с задачами:${NC}"
-    
-    # Массив для хранения имен файлов
-    files=()
-    i=1
-    
-    # Сканируем папку tasks
-    if [ ! -d "$TASKS_DIR" ]; then
-        echo -e "${RED}❌ Папка $TASKS_DIR не найдена! Создайте её и добавьте туда файлы .txt${NC}"
-        exit 1
-    fi
+# --- СПИСОК МОДЕЛЕЙ ДЛЯ СРАВНЕНИЯ ---
+# Ты можешь менять эти модели на актуальные из списка OpenRouter
+declare -a MODELS=(
+    "qwen/qwen-2.5-coder-32b-instruct"      # 1. Слабая/Дешевая (быстрая)
+    "z-ai/glm-5-turbo"                      # 2. Средняя (баланс)
+    "anthropic/claude-3.5-sonnet"           # 3. Сильная/Дорогая (умная)
+)
+declare -a MODEL_LABELS=(
+    "Слабая (Qwen 2.5 Coder)"
+    "Средняя (GLM 5 Turbo)"
+    "Сильная (Claude 3.5 Sonnet)"
+)
 
-    # Читаем файлы .txt
-    for file in "$TASKS_DIR"/*.txt; do
-        if [ -f "$file" ]; then
-            filename=$(basename "$file")
-            files+=("$filename")
-            echo "   $i) $filename"
-            ((i++))
-        fi
+echo -e "${BLUE}🤖 УНИВЕРСАЛЬНЫЙ AI ТЕСТЕР${NC}"
+echo "========================================"
+
+# --- ШАГ 1: ВЫБОР МОДЕЛИ ИЛИ РЕЖИМ СРАВНЕНИЯ ---
+echo -e "${YELLOW}1. Выбор режима работы:${NC}"
+echo "   1) Тест одной конкретной модели"
+echo "   2) Сравнение всех 3-х моделей (Слабая vs Средняя vs Сильная)"
+echo -n "Ваш выбор (1-2): "
+read mode_choice
+
+SELECTED_MODEL=""
+MODEL_NAME_DISPLAY=""
+
+if [ "$mode_choice" == "1" ]; then
+    echo -e "\n${YELLOW}Выберите модель:${NC}"
+    for i in "${!MODELS[@]}"; do
+        echo "   $((i+1))) ${MODEL_LABELS[$i]}"
     done
-
-    if [ ${#files[@]} -eq 0 ]; then
-        echo -e "${RED}❌ В папке $TASKS_DIR нет файлов .txt${NC}"
-        exit 1
-    fi
-
-    echo ""
-    echo -n "Выберите номер задачи (1-${#files[@]}): "
-    read choice
-
-    # Проверка ввода
-    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#files[@]}" ]; then
-        echo -e "${RED}❌ Неверный номер.${NC}"
-        exit 1
-    fi
-
-    # Читаем содержимое выбранного файла
-    selected_file="${TASKS_DIR}/${files[$((choice-1))]}"
-    # Пробуем конвертировать из UTF-8 в WINDOWS-1251. Если iconv нет, пробуем cat.
-    if command -v iconv &> /dev/null; then
-        TASK=$(iconv -f UTF-8 -t WINDOWS-1251 "$selected_file" 2>/dev/null || cat "$selected_file")
-    else
-        TASK=$(cat "$selected_file")
-    fi
+    echo -n "Номер модели (1-${#MODELS[@]}): "
+    read model_idx
     
-    echo -e "${GREEN}✅ Загружена задача из: ${files[$((choice-1))]}${NC}"
+    if ! [[ "$model_idx" =~ ^[0-9]+$ ]] || [ "$model_idx" -lt 1 ] || [ "$model_idx" -gt "${#MODELS[@]}" ]; then
+        echo -e "${RED}❌ Неверный номер.${NC}"; exit 1
+    fi
+    SELECTED_MODEL="${MODELS[$((model_idx-1))]}"
+    MODEL_NAME_DISPLAY="${MODEL_LABELS[$((model_idx-1))]}"
+    echo -e "${GREEN}✅ Выбрана модель: $MODEL_NAME_DISPLAY${NC}"
+elif [ "$mode_choice" == "2" ]; then
+    echo -e "${GREEN}✅ Режим сравнения: Будут протестированы все 3 модели.${NC}"
+    SELECTED_MODEL="ALL"
+else
+    echo -e "${RED}❌ Неверный выбор.${NC}"; exit 1
+fi
+
+# --- ШАГ 2: ВЫБОР ТЕМПЕРАТУРЫ ---
+echo -e "\n${YELLOW}2. Настройка температуры (Temperature):${NC}"
+echo "   1) 0.0 (Строгая логика, детерминизм)"
+echo "   2) 0.7 (Баланс, по умолчанию)"
+echo "   3) 1.0 (Креатив, хаос)"
+echo -n "Ваш выбор (1-3) [Enter для 0.7]: "
+read temp_choice
+
+case $temp_choice in
+    1) TEMP="0.0" ;;
+    2) TEMP="0.7" ;;
+    3) TEMP="1.0" ;;
+    *) TEMP="0.7" ;;
+esac
+echo -e "${GREEN}✅ Температура установлена: $TEMP${NC}"
+
+# --- ШАГ 3: ВЫБОР ЗАДАЧИ ---
+echo -e "\n${YELLOW}3. Выбор задачи из папки tasks/:${NC}"
+files=()
+i=1
+if [ ! -d "$TASKS_DIR" ]; then
+    echo -e "${RED}❌ Папка $TASKS_DIR не найдена!${NC}"; exit 1
+fi
+
+for file in "$TASKS_DIR"/*.txt; do
+    if [ -f "$file" ]; then
+        filename=$(basename "$file")
+        files+=("$filename")
+        echo "   $i) $filename"
+        ((i++))
+    fi
+done
+
+if [ ${#files[@]} -eq 0 ]; then
+    echo -e "${RED}❌ Нет файлов .txt в $TASKS_DIR${NC}"; exit 1
+fi
+
+echo -n "Номер задачи (1-${#files[@]}): "
+read task_choice
+if ! [[ "$task_choice" =~ ^[0-9]+$ ]] || [ "$task_choice" -lt 1 ] || [ "$task_choice" -gt "${#files[@]}" ]; then
+    echo -e "${RED}❌ Неверный номер.${NC}"; exit 1
+fi
+
+selected_file="${TASKS_DIR}/${files[$((task_choice-1))]}"
+TASK=$(cat "$selected_file")
+echo -e "${GREEN}✅ Загружена задача: ${files[$((task_choice-1))]}${NC}"
+echo "----------------------------------------"
+
+# --- ФУНКЦИЯ ЗАПРОСА С ЗАМЕРОМ ВРЕМЕНИ ---
+# --- ФУНКЦИЯ ЗАПРОСА С ЗАМЕРОМ ВРЕМЕНИ И ПОЛНЫМ ВЫВОДОМ ---
+run_model_test() {
+    local model=$1
+    local label=$2
+    local start_time=$(date +%s.%N)
+
+    echo -e "\n${CYAN}🚀 ЗАПУСК: $label${NC}"
+    echo "Модель: $model | Temp: $TEMP"
     echo "----------------------------------------"
-    echo "Текст задачи: $TASK"
-    echo "----------------------------------------"
-    echo ""
-}
 
-# --- ФУНКЦИЯ ОТПРАВКИ ЗАПРОСА ---
-send_request() {
-    local method_name=$1
-    local prompt_content=$2
+    # Экранирование
+    escaped_content=$(printf '%s' "$TASK" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g' | tr -d '\r')
+    JSON_BODY="{\"model\": \"$model\", \"messages\": [{\"role\": \"user\", \"content\": \"$escaped_content\"}], \"temperature\": $TEMP}"
 
-    echo -e "${YELLOW}▶️  ЗАПУСК: $method_name${NC}"
-    
-    # Формируем JSON. Внимание: если в задаче есть двойные кавычки, их нужно экранировать.
-    # Для простоты заменяем двойные кавычки на одинарные внутри текста задачи перед отправкой,
-    # либо используем более надежный способ через printf, но для базовых задач сойдет так:
-    # Экранирование специальных символов для JSON
-    escaped_content=$(echo "$prompt_content" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
-
-    JSON_BODY="{\"model\": \"$MODEL\", \"messages\": [{\"role\": \"user\", \"content\": \"$escaped_content\"}]}"
-
-    RESPONSE=$(curl -s -X POST "$URL" \
+    # Запрос (получаем сырой ответ)
+    RESPONSE=$(curl -s -w "\n%{time_total}" -X POST "$URL" \
       -H "Authorization: Bearer $API_KEY" \
       -H "Content-Type: application/json" \
       -H "HTTP-Referer: http://localhost" \
       -d "$JSON_BODY")
 
-    # Извлечение ответа (попробуем найти поле content)
-    # Если установлен jq, лучше: CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
-    CONTENT=$(echo "$RESPONSE" | grep -o '"content":"[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/\\n/\n/g' | sed 's/\\"/"/g')
+    # Разделяем тело ответа и время (последняя строка)
+    RESPONSE_BODY=$(echo "$RESPONSE" | head -n -1)
+    TIME_TAKEN=$(echo "$RESPONSE" | tail -n 1)
 
-    if [ -z "$CONTENT" ]; then
-        echo -e "${RED}⚠️ Не удалось получить ответ. Проверьте ключ или формат JSON.${NC}"
-        echo "Raw response: $RESPONSE"
-    else
-        echo "$CONTENT"
-    fi
+    # Парсинг контента и токенов
+    CONTENT=""
+    TOKENS=""
     
-    # Статистика токенов
-    tokens=$(echo "$RESPONSE" | grep -o '"total_tokens":[0-9]*' | cut -d':' -f2)
-    if [ -n "$tokens" ]; then
-        echo -e "${GREEN}💰 Потрачено токенов: $tokens${NC}"
+    if command -v jq &> /dev/null; then
+        CONTENT=$(echo "$RESPONSE_BODY" | jq -r '.choices[0].message.content // "Ошибка парсинга"')
+        TOKENS=$(echo "$RESPONSE_BODY" | jq -r '.usage.total_tokens // "N/A"')
+    else
+        # Резервный вариант без jq (может быть менее надежным для сложного текста)
+        CONTENT=$(echo "$RESPONSE_BODY" | grep -o '"content":"[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/\\n/\n/g' | sed 's/\\"/"/g')
+        TOKENS=$(echo "$RESPONSE_BODY" | grep -o '"total_tokens":[0-9]*' | cut -d':' -f2)
+        [ -z "$TOKENS" ] && TOKENS="N/A"
     fi
+
+    # === ГЛАВНЫЙ БЛОК: ВЫВОД ОТВЕТА МОДЕЛИ ===
+    echo -e "\n${YELLOW}💬 ОТВЕТ МОДЕЛИ (Размышления и результат):${NC}"
+    echo "=================================================="
+    if [ -n "$CONTENT" ] && [ "$CONTENT" != "Ошибка парсинга" ]; then
+        # Выводим текст как есть, сохраняя переносы строк
+        echo -e "$CONTENT"
+    else
+        echo -e "${RED}⚠️ Не удалось получить текст ответа.${NC}"
+        echo "Проверьте raw ответ ниже:"
+        echo "$RESPONSE_BODY"
+    fi
+    echo "=================================================="
+    # ======================================================
+
+    # Блок статистики
+    echo -e "\n${GREEN}📊 ТЕХНИЧЕСКАЯ СТАТИСТИКА:${NC}"
+    echo "   ⏱ Время ответа: ${TIME_TAKEN} сек."
+    echo "   💰 Потрачено токенов: ${TOKENS}"
+    echo "   🤖 Модель: $model"
     echo ""
 }
 
-# --- ОСНОВНОЙ ПРОЦЕСС ---
+# --- ОСНОВНОЙ ЗАПУСК ---
+echo -e "\n${BLUE}🏁 НАЧАЛО ТЕСТИРОВАНИЯ${NC}"
 
-# 1. Выбор задачи пользователем
-select_task
-
-# 2. Запуск 4 способов тестирования с выбранной задачей
-# Обратите внимание: мы используем переменную $TASK, которую прочитали из файла
-
-send_request "1. Прямой ответ" "$TASK Дай только краткий ответ без объяснений."
-
-send_request "2. Пошаговое решение (Chain of Thought)" "$TASK Реши эту задачу пошагово. Сначала выпиши все условия, затем построй логическую цепочку, и только потом дай ответ."
-
-send_request "3. Само-промптинг" "Я хочу решить задачу: '$TASK'. Сначала составь идеальный, детальный промпт для решения этой задачи, который заставит модель не ошибиться. Затем, используя этот составленный тобой промпт, реши задачу сам."
-
-send_request "4. Группа экспертов" "Представь, что ты группа из трех экспертов: Аналитик, Инженер и Критик. Задача: '$TASK'. 1. Аналитик: Разбери условия формально. 2. Инженер: Построй схему решения. 3. Критик: Проверь выводы на ошибки. В конце выдай общее консенсусное решение."
-
-echo -e "${GREEN}✅ Все тесты завершены!${NC}"
+if [ "$SELECTED_MODEL" == "ALL" ]; then
+    # Режим сравнения: гоняем цикл по всем моделям
+    for i in "${!MODELS[@]}"; do
+        run_model_test "${MODELS[$i]}" "${MODEL_LABELS[$i]}"
+    done
+    echo -e "\n${GREEN}✅ Сравнение завершено! Проанализируйте время, токены и качество ответов выше.${NC}"
+else
+    # Режим одной модели
+    run_model_test "$SELECTED_MODEL" "$MODEL_NAME_DISPLAY"
+    echo -e "\n${GREEN}✅ Тест завершен!${NC}"
+fi
